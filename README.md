@@ -30,7 +30,7 @@
 </p>
 
 <p align="center">
-  <video src="media/videos/eccv2026_teaser_movie.mp4" controls autoplay loop muted playsinline width="100%"></video>
+  <img src="media/videos/eccv2026_teaser_movie.gif" alt="ReconSplat teaser" width="100%">
 </p>
 
 💡 **TL;DR:** Sparse-view 3D reconstruction is ill-posed: regression-based methods recover reliable geometry but **cannot complete unseen regions**, while generative methods synthesize plausible novel content **without corresponding geometry**.

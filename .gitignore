@@ -55,3 +55,6 @@ ENV/
 /datasets
 /checkpoints
 /outputs
+
+# Teaser source video (GIF is committed instead)
+media/videos/*.mp4
