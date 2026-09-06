@@ -1,0 +1,5 @@
+# Optional dependencies for src/scripts/compute_met3r.py only: not needed for training or the
+# main evaluation pipeline. Skip this file unless you specifically need that script.
+
+featup @ git+https://github.com/mhamilton723/FeatUp@6b5a6c0e91f75e69194807128dcbc39c3084a30d
+met3r @ git+https://github.com/mohammadasim98/met3r@ee0e1752898559e1a3e85e2e151d3edeb9b55f73

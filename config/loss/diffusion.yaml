@@ -1,0 +1,6 @@
+diffusion:
+  c_weight: 1.0
+  d_weight: 0.5
+  apply_after_step: 0
+  disable_after_step: 10_000_000
+  use_confidence_mask: false 

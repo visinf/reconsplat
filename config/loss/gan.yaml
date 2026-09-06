@@ -1,0 +1,5 @@
+gan:
+  g_weight: 0.75
+  d_weight: 1.0
+  apply_after_step: 0
+  disable_after_step: 10_000_000 

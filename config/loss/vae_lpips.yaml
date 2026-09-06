@@ -1,0 +1,5 @@
+vae_lpips:
+  weight: 0.1
+  apply_after_step: 0
+  disable_after_step: 10_000_000 
+  

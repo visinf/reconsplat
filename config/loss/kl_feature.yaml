@@ -1,0 +1,4 @@
+kl_feature:
+  color_weight: 1.0e-6
+  depth_weight: 1.0e-6
+  apply_after_step: 0

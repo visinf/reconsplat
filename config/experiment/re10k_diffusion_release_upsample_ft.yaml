@@ -1,0 +1,130 @@
+# @package _global_
+
+defaults:
+  - override /dataset: re10k
+  - override /model/encoder: costvolume
+  - override /loss: [diffusion]
+  - override /model/diffuser/denoiser/multi_view_attention: spatial_transformer_3d
+  - override /model/diffuser/train_scheduler: ddpm
+
+wandb:
+  name: re10k_diffusion_release_upsample_ft
+  tags: [re10k, 256x256, upsample_ft]
+  mode: online
+
+data_loader:
+  train:
+    batch_size: 3
+    num_workers: 10
+    prefetch_factor: 4
+
+trainer:
+  max_steps: 75_001              # the 50k milestone is what the paper reports; the tail is headroom
+  val_check_interval: 1000
+  precision: 32-true              # bf16-mixed was confirmed to cause late-onset loss divergence here
+model:
+  encoder:
+    num_depth_candidates: 128
+    costvolume_unet_feat_dim: 128
+    costvolume_unet_channel_mult: [1,1,1]
+    costvolume_unet_attn_res: [4]
+    gaussians_per_pixel: 1
+    depth_unet_feat_dim: 32
+    depth_unet_attn_res: [16]
+    depth_unet_channel_mult: [1,1,1,1,1]
+    legacy_2views: false
+    grid_sample_disable_cudnn: true
+    fit_ckpt: true
+    gaussian_adapter:
+      feature_sh_degree: 2
+      n_feature_channels: 4
+
+  discriminator: null
+  
+  diffuser:
+    variational_rast_cond: false    
+    replace_conv_in_out: false      # need for zero-init.
+    upsample_latents: true          # train with upsampling of the latent space (x2)
+    downsample_preds: true          # downsample model predictions back to the native size
+    apply_multi_res_noise: false    
+    annealed_mr_noise: false
+    mr_noise_strength: 0.9
+    mr_noise_downscale_strategy: original
+    gaussian_mean: 0.0    # used at sampling
+    gaussian_variance: 1.0  # used at sampling
+    enable_clip_conditioner_cross_attn: false
+    # sampling_scheduler: dpm++ # dpm++ active by default.
+
+    denoiser:
+      pretrained_from: sd2-community/stable-diffusion-2-1
+      pretrained_revision: bb2154823665391b4fb29b0b9cf82a198964ee05   
+      low_res_cross_view_attn: true
+      min_scale_factor_cross_view_attn: 4
+      gradient_checkpointing: true
+
+    train_scheduler:
+      shift_schedule: false
+      prediction_type: "v_prediction"
+      num_inference_steps: 25         # DPM++ sampling steps at val/test; matches the paper runs (ddpm.yaml default is 70)
+      
+train:
+  stage: diffusion
+
+checkpointing:
+  load_first_stage: null # set as needed
+  load_second_stage: null # set as needed
+  resume: false
+  every_n_train_steps: 500      
+  save_top_k: 3                   # only the 3 most recent every_n_train_steps checkpoints are kept
+  milestone_every_n_steps: 50000  # kept forever, for plotting metrics at different training budgets
+
+loss:
+  diffusion:
+    c_weight: 0.5
+    d_weight: 0.5
+    apply_after_step: 0
+
+# Fixing near and far depth planes based on statistic from VGGT predictions.
+dataset: 
+  image_shape: [256, 256]
+  roots: [datasets/re10k]
+  labels_root: datasets/re10k_depth_labels
+  load_labels_from_zarr_dirs: true
+  load_other_cameras: true
+  cameras_root: datasets/re10k_vggt_cameras
+  near: 0.01        # computed on RE10k with VGGT statistics
+  far: 2.01         # computed on RE10k with VGGT statistics
+  baseline_scale_bounds: false
+  make_baseline_1: false
+  sort_target_index: true
+  sort_context_index: true
+  test_chunk_interval: -1
+
+  # Same as first stage.
+  view_sampler:
+    num_context_views: 2
+    num_target_views: 4
+    target_views_replace_sample: false
+    min_distance_between_context_views: 45
+    max_distance_between_context_views: 90 # 90
+    max_distance_to_context_views: 90 # 90
+    context_gap_warm_up_steps: 0   # 150_000
+    target_gap_warm_up_steps: 0  # 50_000
+    initial_min_distance_between_context_views: 45
+    initial_max_distance_between_context_views: 45 # 45
+    initial_max_distance_to_context_views: 45  # 0
+
+optimizer:
+  generator:
+    lr: 5e-5
+    scale_lr: false
+    gradient_clip_val: 0.5
+    lr_scheduler: 
+      cosine_lr: false
+      warm_up_steps: 1000
+      
+test:
+  eval_time_skip_steps: 5
+  compute_scores: true
+  generate_val_video_wobble: false
+  align_pcd_with_rasterized_depth: true

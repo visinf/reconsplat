@@ -1,0 +1,42 @@
+seed: 42
+
+pipeline:
+  structure:
+    feed_forward: true
+    load_from_url: true
+    model_path: "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+    # VGGT parameters
+    # vggt_fixed_resolution: [252, 448] (set by default)
+    patch_size: 14
+    save_points_3d: true
+    sample_points_3d: true
+    max_points_for_colmap: 100000
+    conf_thres_value: 1.0
+    save_intermediate_sparse: false # save VGGT predictions in COLMAP format
+    save_intermediate_dense: false
+    save_images: false
+    save_video_depth: false
+
+  processor:
+    dataset_name: dl3dv
+    # image_load_resolution: [252, 448] (set by default)
+    from_chunks: true
+    save_back_to_chunks: false # NOTE: not recommended, for cameras will overwrite COLMAP poses, and takes extra space for depth.
+    save_cameras_to_npz: true
+    save_depth_as_npz: true
+    skip_already_processed_chunks: true
+    skip_cache_file: processed_all.txt
+    save_progress: true
+    progress_dir: "progress_last" # directory to save progress files and resume from
+    errors_dir: "errors_lasts" # directory to save errors encountered during processing
+
+  load_dir: datasets/dl3dv10k_chunks/
+  out_dir: datasets/dl3dv10k_processed/
+  align_with_video_depth: false # predict depth from Video-DepthAnything
+  save_recon_after_align: false
+  save_aligned_depth_video: false
+  scale_predictions_to_orginal_res: false
+
+  video_depth:
+    encoder: 'vitl'
+    model_dir: 'checkpoints/video_depth_anything'

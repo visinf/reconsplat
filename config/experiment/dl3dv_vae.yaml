@@ -1,0 +1,125 @@
+# @package _global_
+
+defaults:
+  - override /dataset: dl3dv
+  - override /model/encoder: costvolume
+  - override /loss: [mse, lpips, kl_feature, l1, vae_lpips, vae_depth_charb, gan]
+  - override /model/discriminator: kl_f8
+  
+wandb:
+  name: dl3dv_vae_warmup_depthsplat_sampler
+  tags: [dl3dv, 256x480]
+  mode: online
+
+data_loader:
+  train:
+    batch_size: 1
+
+trainer:
+  max_steps: 100_001
+  val_check_interval: 500
+
+# ----- Additional params for default best model customization
+model:
+  encoder:
+    num_depth_candidates: 128
+    costvolume_unet_feat_dim: 128
+    costvolume_unet_channel_mult: [1,1,1]
+    costvolume_unet_attn_res: [4]
+    gaussians_per_pixel: 1
+    depth_unet_feat_dim: 32
+    depth_unet_attn_res: [16]
+    depth_unet_channel_mult: [1,1,1,1,1]
+    legacy_2views: false
+    grid_sample_disable_cudnn: true
+    shim_patch_size: 16
+    fit_ckpt: true
+    gaussian_adapter:
+      feature_sh_degree: 2
+      n_feature_channels: 4
+    costvolume_nearest_n_views: 3
+    multiview_trans_nearest_n_views: 3
+
+  discriminator:
+    pretrained: true
+    pretrained_path: checkpoints/pretrained/discriminator
+
+train:
+  stage: vae
+
+# init with weights from RE10k ckpt
+checkpointing:
+  load_first_stage: checkpoints/stage1-vae/re10k.ckpt
+  resume: false
+  every_n_train_steps: 5000       # 5000
+
+loss:
+  # aux. losses - good to have them always active
+  mse:
+    weight: 10.0
+
+  lpips:
+    weight: 0.5
+    apply_after_step: 0
+
+  # VAE losses (recon. + perceptual + adversarial w/ adaptive weight)
+  l1:
+    weight: 1.0
+    apply_after_step: 50_001
+
+  vae_lpips:
+    weight: 1.0
+    apply_after_step: 50_001
+
+  vae_depth_charb:
+    weight: 0.5
+    grad_weight: 10.0
+    apply_after_step: 50_001
+
+  vae_depth_ssim:
+    weight: 1.0
+    apply_after_step: 50_001
+
+  kl_feature:
+    color_weight: 1.0e-6
+    depth_weight: 1.0e-6
+    apply_after_step: 50_001
+
+  gan:
+    g_weight: 0.75
+    d_weight: 1.0
+    apply_after_step: 80_001
+
+# Fixing near and far depth planes based on statistic from VGGT predictions.
+dataset: 
+  image_shape: [256, 480]
+  roots: [datasets/dl3dv]
+  labels_root: labels/dl3dv_processed
+  load_labels_from_zarr_dirs: false
+  load_other_cameras: true
+  cameras_root: labels/dl3dv_processed
+  near: 0.01        # computed on RE10k with VGGT statistics
+  far: 2.01         # computed on RE10k with VGGT statistics
+  baseline_scale_bounds: false
+  make_baseline_1: false
+  sort_target_index: true
+  sort_context_index: true
+  test_chunk_interval: -1
+  
+  # Default view sampler as used in mvsplat360 - duplicated of boundedv2_dl3dv.yaml
+  view_sampler:
+    num_context_views: 4
+    num_target_views: 4
+    extra_views_sampling_strategy: farthest_point
+    min_distance_between_context_views: 20
+    max_distance_between_context_views: 40
+    max_distance_to_context_views: 0
+    context_gap_warm_up_steps: 10000
+    target_gap_warm_up_steps: 0
+    initial_min_distance_between_context_views: 15
+    initial_max_distance_between_context_views: 30
+    initial_max_distance_to_context_views: 0
+
+test:
+  eval_time_skip_steps: 5
+  compute_scores: true

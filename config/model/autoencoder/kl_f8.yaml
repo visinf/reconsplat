@@ -1,0 +1,22 @@
+name: kl
+model: kl_f8
+
+down_block_types: 
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+block_out_channels: [128, 256, 512, 512]
+layers_per_block: 2
+latent_channels: 4
+
+video_decoder: true
+video_decoder_path: checkpoints/video/svd.safetensors
+
+pretrained: True
+pretrained_path: checkpoints/pretrained/autoencoder

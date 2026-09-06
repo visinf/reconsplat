@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - re10k_diffusion_release_upsample_ft
+
+wandb:
+  name: re10k_diffusion_release_upsample_ft_evals
+  mode: disabled
+
+checkpointing:
+  load_first_stage: checkpoints/stage1-vae/re10k.ckpt
+  load_second_stage: checkpoints/stage2-diffusion/re10k-upsample-ft.ckpt
+  resume: false

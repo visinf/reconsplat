@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ReconSplat PCD Browser</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --fg: #e6e9ef; --dim: #8b93a3; --accent: #6ea8fe; --warn: #ff7b72;
+  }
+  * { box-sizing: border-box; }
+  /* Filmstrip row must fit TWO stacked 76px thumbnails plus a label and padding
+     (76+76+14+16 = 182); at the old 132px the lower (depth) image was clipped. */
+  body { margin: 0; height: 100vh; display: grid;
+         grid-template-columns: 260px 1fr 300px; grid-template-rows: 1fr 196px;
+         font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--fg); overflow: hidden; }
+  .panel { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; }
+  /* Explicit placement: relying on auto-placement here put #right into column 2 on top of the
+     canvas, because it declares a row span but no column. */
+  #sidebar { grid-column: 1; grid-row: 1 / 3; }
+  #stage   { grid-column: 2; grid-row: 1; position: relative; background: #0b0d11; overflow: hidden; }
+  #film    { grid-column: 2; grid-row: 2; background: var(--panel); border-top: 1px solid var(--line);
+             display: flex; gap: 6px; overflow-x: auto; align-items: center; padding: 8px; }
+  #right   { grid-column: 3; grid-row: 1 / 3; border-right: none;
+             border-left: 1px solid var(--line); padding: 12px; }
+  /* Required: renderer.setSize(w, h, false) sets the drawing buffer but deliberately does NOT
+     touch the element's style, so without this the canvas lays out at its attribute size --
+     devicePixelRatio times too large -- and spills far outside the grid cell. */
+  #cv { display: block; width: 100%; height: 100%; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+       margin: 14px 12px 6px; font-weight: 600; }
+  #right h2:first-child { margin-top: 0; }
+  .scene { padding: 6px 12px; cursor: pointer; border-left: 3px solid transparent;
+           display: flex; justify-content: space-between; gap: 6px; font-size: 12px; }
+  .scene:hover { background: var(--panel2); }
+  .scene.sel { background: var(--panel2); border-left-color: var(--accent); }
+  .scene .id { font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; }
+  .scene .tag { color: var(--dim); font-size: 10px; flex: none; }
+  label { display: block; margin: 9px 0 3px; color: var(--dim); font-size: 11px;
+          display: flex; justify-content: space-between; }
+  label b { color: var(--fg); font-weight: 500; font-family: ui-monospace, monospace; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  select, button, input[type=text] { background: var(--panel2); color: var(--fg);
+          border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px; font: inherit;
+          font-size: 12px; width: 100%; }
+  button { cursor: pointer; } button:hover { border-color: var(--accent); }
+  .row { display: flex; gap: 6px; } .row > * { flex: 1; }
+  .chk { display: flex; align-items: center; gap: 6px; margin: 7px 0; color: var(--dim); }
+  .chk input { accent-color: var(--accent); }
+  #status { position: absolute; left: 10px; top: 10px; background: #000a; padding: 5px 9px;
+            border-radius: 5px; font-family: ui-monospace, monospace; font-size: 11px; }
+  #err { position: absolute; left: 10px; bottom: 10px; color: var(--warn); background: #000a;
+         padding: 5px 9px; border-radius: 5px; max-width: 70%; display: none; }
+  .thumb { flex: none; text-align: center; color: var(--dim); font-size: 10px; cursor: pointer; }
+  .thumb img { display: block; height: 76px; border-radius: 4px; border: 2px solid transparent;
+               margin-bottom: 2px; }
+  .thumb.ctx img { border-color: var(--accent); }
+  .thumb.off { opacity: .3; }
+  .thumb.off img { filter: grayscale(1); }
+  .hint { color: var(--dim); font-size: 11px; margin: 8px 12px; }
+  .fitbtn { font-size: 11px; padding: 4px 6px; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.161.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.161.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+
+<script>
+  // Boot guard. The three.js modules come from unpkg, so if the browser cannot reach it the module
+  // script never executes and the page just sits there looking broken with no clue why.
+  window.__viewerBooted = false;
+  window.addEventListener("error", (e) => {
+    const el = document.getElementById("err");
+    if (!el) return;
+    el.style.display = "block";
+    el.textContent = "JS error: " + (e.message || e.error || "unknown");
+  });
+  setTimeout(() => {
+    if (window.__viewerBooted) return;
+    const el = document.getElementById("err");
+    if (!el) return;
+    el.style.display = "block";
+    el.innerHTML = "Viewer did not start. three.js is loaded from unpkg.com — if this machine "
+      + "cannot reach it, nothing runs. Open the browser console for the exact error.";
+  }, 6000);
+</script>
+
+<div id="sidebar" class="panel">
+  <h2>Datasets</h2>
+  <div style="padding:0 12px"><select id="dsFilter"><option value="">all</option></select></div>
+  <h2>Show</h2>
+  <div style="padding:0 12px"><select id="procFilter">
+    <option value="all">all scenes</option>
+    <option value="fit">only with rasterized fit</option>
+    <option value="nofit">only without fit</option>
+  </select></div>
+  <h2>Scenes <span id="sceneCount" style="color:var(--dim)"></span></h2>
+  <div id="sceneList"></div>
+  <div class="hint">[ / ] previous / next</div>
+</div>
+
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <div id="status">no scene loaded</div>
+  <div id="err"></div>
+</div>
+
+<div id="right" class="panel">
+  <h2>Scale recovery</h2>
+  <select id="fitSel"></select>
+  <label>a &middot; log-depth slope <b id="aVal">0</b></label>
+  <input type="range" id="aSlider" min="-6" max="6" step="0.001" value="1" />
+  <label>b &middot; log-depth offset <b id="bVal">0</b></label>
+  <input type="range" id="bSlider" min="-6" max="6" step="0.001" value="0" />
+  <div class="hint" id="fitInfo" style="margin:6px 0"></div>
+
+  <h2>Frames</h2>
+  <label>frames to unproject <b id="frameVal">all</b></label>
+  <div class="row">
+    <button class="fitbtn" id="selAll">all</button>
+    <button class="fitbtn" id="selNone">none</button>
+    <button class="fitbtn" id="selInv">invert</button>
+    <button class="fitbtn" id="selCtx">context only</button>
+  </div>
+  <div class="hint" style="margin:4px 0">click a thumbnail below to toggle its frame</div>
+
+  <h2>Display</h2>
+  <label>point size <b id="psVal">5</b></label>
+  <input type="range" id="psSlider" min="0.2" max="16" step="0.1" value="5" />
+  <div class="chk"><input type="checkbox" id="constSize" /><span>constant point size (reveals far/sparse regions)</span></div>
+  <label>density (pixel stride)</label>
+  <select id="strideSel">
+    <option value="2">stride 2 &middot; dense</option>
+    <option value="3" selected>stride 3 &middot; balanced</option>
+    <option value="4">stride 4 &middot; light</option>
+    <option value="6">stride 6 &middot; very light</option>
+  </select>
+  <label>color by</label>
+  <select id="colorMode">
+    <option value="0" selected>predicted RGB</option>
+    <option value="1">depth</option>
+    <option value="2">frame index</option>
+  </select>
+  <div class="chk" style="margin-top:10px">
+    <input type="checkbox" id="autoUp" checked /><span>auto-upright from cameras</span>
+  </div>
+  <div class="chk">
+    <input type="checkbox" id="flipX" /><span>flip X</span>
+    <input type="checkbox" id="flipY" style="margin-left:10px" /><span>flip Y</span>
+    <input type="checkbox" id="flipZ" style="margin-left:10px" /><span>flip Z</span>
+  </div>
+  <div class="hint" id="flipInfo" style="margin:2px 0"></div>
+  <div class="chk"><input type="checkbox" id="showCams" checked /><span>camera frustums
+    (<span style="color:#22d3ee">context</span> / <span style="color:#f87171">target</span>)</span></div>
+  <label>frustum size <b id="frusVal">0.15</b></label>
+  <input type="range" id="frusSlider" min="0.01" max="3" step="0.01" value="0.15" />
+  <label>frustum line width <b id="frusWVal">3 px</b></label>
+  <input type="range" id="frusWSlider" min="1" max="12" step="0.5" value="3" />
+  <div class="row" style="margin-top:8px"><button id="recenter">recenter view</button></div>
+
+  <h2>Snapshot</h2>
+  <label>supersample <b id="ssVal">2x</b></label>
+  <input type="range" id="ssSlider" min="1" max="4" step="1" value="2" />
+  <button id="snap">save transparent PDF + PNG</button>
+  <div class="hint" id="snapInfo" style="margin:6px 0"></div>
+
+  <h2>Record reconstruction</h2>
+  <label>fps <b id="recFpsVal">12</b></label>
+  <input type="range" id="recFps" min="4" max="30" step="1" value="12" />
+  <label>resolution scale <b id="recScaleVal">0.75</b></label>
+  <input type="range" id="recScale" min="0.25" max="2" step="0.05" value="0.75" />
+  <label>hold last frame <b id="recHoldVal">10</b></label>
+  <input type="range" id="recHold" min="0" max="40" step="1" value="10" />
+  <label>format</label>
+  <select id="recFmt"><option value="gif" selected>GIF</option><option value="mp4">MP4</option></select>
+  <div class="chk"><input type="checkbox" id="recCompose" checked /><span>with context + predictions</span></div>
+  <button id="recBtn" style="margin-top:8px">record from this view</button>
+  <div class="hint" id="recInfo" style="margin:6px 0"></div>
+
+</div>
+
+<div id="film"></div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+// LineBasicMaterial.linewidth is clamped to 1px in most browsers, so adjustable-width lines need
+// LineSegments2/LineMaterial instead (needs the viewport resolution refreshed on resize).
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+
+const $ = (id) => document.getElementById(id);
+const state = { scenes: [], sel: null, meta: null, geom: null, points: null, n: 0,
+                orient: new THREE.Quaternion(), cams: null, camMat: null, frames: new Set() };
+
+// Renderer. Positions are computed in the vertex shader from (origin, direction, z01), so moving
+// the scale/offset sliders never touches CPU memory. alpha + preserveDrawingBuffer are both
+// needed for snapshots (transparent clear, and toDataURL needs the buffer after render).
+const renderer = new THREE.WebGLRenderer({ canvas: $("cv"), antialias: true,
+                                           alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d11);
+const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 5000);
+camera.position.set(0, 0, 3);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const uniforms = {
+  uA: { value: 1 }, uB: { value: 0 }, uPointSize: { value: 5 },
+  uEdge: { value: 0.2 }, uDMin: { value: 0 }, uDMax: { value: 100 },
+  uReqGauss: { value: 0 },
+  uSel: { value: new Float32Array(64).fill(1) },   // per-frame selection mask, by frame id
+  uNumFrames: { value: 50 },
+  uColorMode: { value: 0 },
+  uSceneScale: { value: 1 },   // scene radius from recenter(); point size is relative to it
+  uFlip: { value: new THREE.Vector3(1, 1, 1) },   // manual per-axis sign flip, off by default
+  uHideSky: { value: 1 },   // sky points are the least reliable; hidden by default
+  // Valid range of the raw normalized depth before any affine; z01 pinned at 0 or 1 means the
+  // prediction saturated (denormalize_depth_quantile clips there), not that it is truly at the edge.
+  uZMin: { value: 0.01 }, uZMax: { value: 1.0 },
+  // Constant screen-space point size keeps far/sparse content visible (perspective sizing makes it
+  // fade out), at the cost of misrepresenting relative distance -- so it is a viewing aid, not the default.
+  uSizeMode: { value: 0 },
+};
+
+const material = new THREE.ShaderMaterial({
+  uniforms,
+  vertexShader: `
+    uniform float uA, uB, uPointSize, uEdge, uDMin, uDMax, uReqGauss, uNumFrames;
+    uniform float uSel[64];
+    uniform float uSceneScale;
+    uniform vec3 uFlip;
+    uniform float uHideSky;
+    uniform float uZMin, uZMax;
+    uniform float uSizeMode;
+    uniform int uColorMode;
+    // Ray direction is carried in the built-in 'position' attribute (three.js derives the draw
+    // count from it, and declares it itself, so it must not be redeclared here).
+    attribute vec3 aOrigin; attribute vec3 aColor;
+    attribute float aZ; attribute float aEdge; attribute float aFrame; attribute float aRMask;
+    attribute float aSky;
+    varying vec3 vColor; varying float vDrop;
+    vec3 ramp(float t) {           // cheap perceptual-ish ramp for the depth / frame color modes
+      t = clamp(t, 0.0, 1.0);
+      return vec3(0.28 + 0.72*t, 0.32 + 0.45*sin(3.14159*t), 0.95 - 0.7*t);
+    }
+    void main() {
+      float depth = exp(uA * aZ + uB);          // the log-affine model from src/misc/depth_io.py
+      vec3 p = (aOrigin + position * depth) * uFlip;   // 'position' = world-space ray direction
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      gl_Position = projectionMatrix * mv;
+      vDrop = 0.0;
+      if (aEdge > uEdge || depth < uDMin || depth > uDMax ||
+          uSel[int(aFrame + 0.5)] < 0.5 ||
+          (uReqGauss > 0.5 && aRMask < 0.5) ||
+          (uHideSky > 0.5 && aSky > 0.5) ||
+          aZ < uZMin || aZ > uZMax) vDrop = 1.0;
+      // Clamp: an unbounded 1/z would blow points up to hundreds of pixels near the camera.
+      gl_PointSize = vDrop > 0.5 ? 0.0
+                   : (uSizeMode > 0.5
+                      ? clamp(uPointSize, 1.0, 64.0)                      // constant screen space
+                      : clamp(uPointSize * uSceneScale / max(-mv.z, 1e-3), 1.0, 24.0));
+      if (vDrop > 0.5) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      if (uColorMode == 1)      vColor = ramp(aZ);
+      else if (uColorMode == 2) vColor = ramp(aFrame / max(uNumFrames - 1.0, 1.0));
+      else                      vColor = aColor;
+    }`,
+  fragmentShader: `
+    varying vec3 vColor; varying float vDrop;
+    void main() {
+      if (vDrop > 0.5) discard;
+      vec2 d = gl_PointCoord - vec2(0.5);
+      if (dot(d, d) > 0.25) discard;             // round points read far better than squares
+      gl_FragColor = vec4(vColor, 1.0);
+    }`,
+});
+
+function resize() {
+  const s = $("stage");
+  renderer.setSize(s.clientWidth, s.clientHeight, false);
+  camera.aspect = s.clientWidth / Math.max(s.clientHeight, 1);
+  camera.updateProjectionMatrix();
+  // Fat lines are sized in screen space, so a stale resolution makes them the wrong thickness.
+  if (state.camMat) state.camMat.resolution.set(renderer.domElement.width, renderer.domElement.height);
+}
+addEventListener("resize", resize);
+
+(function loop() {
+  requestAnimationFrame(loop);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+
+const showErr = (m) => { const e = $("err"); e.textContent = m; e.style.display = m ? "block" : "none"; };
+
+// ---------------------------------------------------------------------------------------------
+// Scene list
+// ---------------------------------------------------------------------------------------------
+async function loadIndex() {
+  const j = await (await fetch("/api/index")).json();
+  state.scenes = j.scenes;
+  const f = $("dsFilter");
+  j.datasets.forEach((d) => f.add(new Option(d, d)));
+  renderList();
+}
+
+// Single source of truth for "which scenes are visible", so the list and the [ / ] keyboard
+// navigation can never disagree about the ordering.
+function visibleScenes() {
+  const ds = $("dsFilter").value, mode = $("procFilter").value;
+  return state.scenes.filter((s) => (!ds || s.dataset === ds) && (
+    mode === "all" || (mode === "fit" && s.has_fit) ||
+    (mode === "nofit" && !s.has_fit)));
+}
+
+function renderList() {
+  const list = $("sceneList");
+  list.innerHTML = "";
+  const shown = visibleScenes();
+  $("sceneCount").textContent = `(${shown.length})`;
+  shown.forEach((s) => {
+    const el = document.createElement("div");
+    el.className = "scene" + (state.sel && state.sel.scene === s.scene ? " sel" : "");
+    el.innerHTML = `<span class="id">${s.scene}</span>` +
+      `<span class="tag">${s.has_fit ? "fit " : ""}${s.dataset}</span>`;
+    el.onclick = () => selectScene(s);
+    list.appendChild(el);
+  });
+}
+$("dsFilter").onchange = renderList;
+$("procFilter").onchange = renderList;
+
+// ---------------------------------------------------------------------------------------------
+// Loading a scene
+// ---------------------------------------------------------------------------------------------
+async function selectScene(s) {
+  state.sel = s;
+  renderList();
+  showErr("");
+  $("status").textContent = `loading ${s.scene}…`;
+
+  const meta = await (await fetch(`/api/scene?dataset=${s.dataset}&scene=${s.scene}`)).json();
+  if (meta.error) return showErr(meta.error);
+  state.meta = meta;
+
+  state.frames = new Set(Array.from({ length: meta.n_frames }, (_, i) => i));
+  uniforms.uNumFrames.value = Math.max(meta.n_frames, 1);
+  uniforms.uSel.value.fill(0);
+  for (let i = 0; i < meta.n_frames; i++) uniforms.uSel.value[i] = 1;
+
+  // NOTE: fits are chosen AFTER the cloud loads. Picking a default requires the scene's z values to
+  // judge whether a fit is well-conditioned, and those only exist once the geometry is here.
+  await loadCloud();
+  populateFits((meta.fit && meta.fit.fits) || {});
+  buildFilmstrip();
+}
+
+// context_oracle: pseudo-GT or a fresh VGGT pass at the context views (recommended default).
+// context_rasterized: oracle-free fallback, against the model's own rasterized depth.
+// rasterized: the oracle-free fit over all target frames, a generalization diagnostic.
+// A context_* fit with max_frame_gap > 0 used a substituted frame, so the label says so.
+const FIT_LABELS = {
+  context_oracle: "context · pseudo-GT / VGGT",
+  context_rasterized: "context · rasterized (oracle-free)",
+  rasterized: "all targets · rasterized (oracle-free)",
+};
+
+// Extent of the camera trajectory: the natural yardstick for "is this depth plausible".
+function cameraSpan() {
+  const O = (state.meta && state.meta.origins) || [];
+  if (O.length < 2) return 1;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  O.forEach((p) => p.forEach((v, i) => { lo[i] = Math.min(lo[i], v); hi[i] = Math.max(hi[i], v); }));
+  return Math.max(Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), 1e-6);
+}
+
+// Depth percentiles a fit would produce on THIS scene's z values. Computed in the browser rather
+// than stored, so it stays correct if the sliders are moved by hand.
+function depthStats(a, b) {
+  if (!state.geom) return null;
+  const z = state.geom.getAttribute("aZ").array;
+  const step = Math.max(1, Math.floor(z.length / 20000));
+  const d = [];
+  for (let i = 0; i < z.length; i += step) d.push(Math.exp(a * z[i] + b));
+  d.sort((x, y) => x - y);
+  const q = (p) => d[Math.min(d.length - 1, Math.floor(p * d.length))];
+  return { p50: q(0.5), p95: q(0.95), p99: q(0.99) };
+}
+
+// A fit is implausible when it throws a chunk of the scene absurdly far relative to the camera
+// baseline. This is what makes a cloud render as a dot: framing follows the outliers. Seen on DL3DV
+// scenes where the pseudo-GT fit reaches a slope near 20, i.e. exp(20) dynamic range.
+const PLAUSIBLE_SPAN_RATIO = 50;
+
+function fitPlausible(f) {
+  const s = depthStats(f.a, f.b);
+  return !s || s.p95 / cameraSpan() < PLAUSIBLE_SPAN_RATIO;
+}
+
+function fitCaption(key, f) {
+  const gap = f.max_frame_gap;
+  const parts = [`coverage ${(100 * (f.coverage ?? 0)).toFixed(1)}%`];
+  if (f.n_frames) parts.push(`${f.n_frames} frame${f.n_frames > 1 ? "s" : ""}`);
+  if (gap !== undefined) parts.push(gap === 0 ? "exact context views" : `substituted, ${gap} frames off`);
+  const s = depthStats(f.a, f.b);
+  if (s) parts.push(`depth p95 ${s.p95.toPrecision(3)} (${(s.p95 / cameraSpan()).toFixed(1)}x baseline)`);
+  return parts.join(" · ");
+}
+
+function populateFits(fits) {
+  const sel = $("fitSel");
+  sel.innerHTML = "";
+  const keys = Object.keys(FIT_LABELS).filter((k) => fits[k]);
+  if (!keys.length) {
+    sel.add(new Option("no fit on disk — set a/b by hand", ""));
+    $("fitInfo").innerHTML = "<span style='color:var(--warn)'>no scale_fit.json for this scene</span>";
+    return;
+  }
+  keys.forEach((k) => {
+    const bad = !fitPlausible(fits[k]);
+    sel.add(new Option(FIT_LABELS[k] + (bad ? "  ⚠ ill-conditioned" : ""), k));
+  });
+  // Prefer exact-context fits, skipping any implausible (ill-conditioned) one.
+  const order = [
+    (fits.context_oracle && fits.context_oracle.max_frame_gap === 0) ? "context_oracle" : null,
+    (fits.context_rasterized && fits.context_rasterized.max_frame_gap === 0) ? "context_rasterized" : null,
+    "rasterized", "context_rasterized", "context_oracle", "oracle",
+  ].filter((k) => k && fits[k]);
+  const pick = order.find((k) => fitPlausible(fits[k])) || order[0] || keys[0];
+  sel.value = pick;
+  applyFit(fits[pick], pick);
+}
+
+function applyFit(fit, key) {
+  $("aSlider").value = uniforms.uA.value = fit.a;
+  $("bSlider").value = uniforms.uB.value = fit.b;
+  $("aVal").textContent = fit.a.toFixed(3);
+  $("bVal").textContent = fit.b.toFixed(3);
+  const bad = !fitPlausible(fit);
+  const warn = bad || fit.max_frame_gap > 0;
+  $("fitInfo").innerHTML = (warn ? "<span style='color:var(--warn)'>" : "<span>")
+    + (bad ? "ILL-CONDITIONED (slope " + fit.a.toFixed(1) + ") — " : "")
+    + fitCaption(key, fit) + "</span>";
+  state.fitKey = key;
+
+  // Re-scale the max-depth clip to this fit, so runaway points from a bad fit stay hidden.
+  const s = depthStats(fit.a, fit.b);
+  if (s) {
+    const hi = Math.max(s.p99 * 1.5, cameraSpan() * 4);
+    uniforms.uDMax.value = bad ? Math.min(s.p50 * 8, hi) : hi;
+  }
+  buildFrustums();     // frustum size tracks the fitted depth scale
+  recenter();
+}
+
+$("fitSel").onchange = (e) => {
+  const f = state.meta && state.meta.fit && state.meta.fit.fits[e.target.value];
+  if (f) applyFit(f, e.target.value);
+};
+
+async function loadCloud() {
+  const s = state.sel, stride = $("strideSel").value;
+  $("status").textContent = `unprojecting ${s.scene} (stride ${stride})…`;
+  const res = await fetch(`/api/cloud?dataset=${s.dataset}&scene=${s.scene}&stride=${stride}`);
+  if (!res.ok) return showErr(`cloud failed: ${(await res.json()).error}`);
+  const info = JSON.parse(res.headers.get("X-Cloud-Info") || "{}");
+  const buf = await res.arrayBuffer();
+
+  // Layout must match the server's pack order: floats first to keep 4-byte alignment.
+  const dv = new DataView(buf);
+  const n = dv.getUint32(4, true);
+  let o = 12;
+  const dirs = new Float32Array(buf, o, n * 3); o += n * 12;
+  const z = new Float32Array(buf, o, n);        o += n * 4;
+  const edge = new Float32Array(buf, o, n);     o += n * 4;
+  const frame = new Uint16Array(buf, o, n);     o += n * 2;
+  const rgb = new Uint8Array(buf, o, n * 3);    o += n * 3;
+  const rmask = new Uint8Array(buf, o, n);      o += n;
+  const sky = new Uint8Array(buf, o, n);
+
+  // Expand per-frame camera centers to per-point origins. Sending these per point would roughly
+  // double the payload; sending them per frame and expanding here costs one pass.
+  const origins = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+  const fFrame = new Float32Array(n), fMask = new Float32Array(n), fSky = new Float32Array(n);
+  const O = state.meta.origins;
+  for (let i = 0; i < n; i++) {
+    const f = frame[i], o3 = i * 3;
+    origins[o3] = O[f][0]; origins[o3 + 1] = O[f][1]; origins[o3 + 2] = O[f][2];
+    col[o3] = rgb[o3] / 255; col[o3 + 1] = rgb[o3 + 1] / 255; col[o3 + 2] = rgb[o3 + 2] / 255;
+    fFrame[i] = f; fMask[i] = rmask[i] > 127 ? 1 : 0; fSky[i] = sky[i] > 127 ? 1 : 0;
+  }
+
+  if (state.points) { scene.remove(state.points); state.geom.dispose(); }
+  const g = new THREE.BufferGeometry();
+  // Ray directions go in `position`: three.js takes the draw count from this attribute, so a
+  // geometry lacking it renders nothing at all (silently).
+  g.setAttribute("position", new THREE.BufferAttribute(dirs, 3));
+  g.setAttribute("aOrigin", new THREE.BufferAttribute(origins, 3));
+  g.setAttribute("aColor", new THREE.BufferAttribute(col, 3));
+  g.setAttribute("aZ", new THREE.BufferAttribute(z, 1));
+  g.setAttribute("aEdge", new THREE.BufferAttribute(edge, 1));
+  g.setAttribute("aFrame", new THREE.BufferAttribute(fFrame, 1));
+  g.setAttribute("aRMask", new THREE.BufferAttribute(fMask, 1));
+  g.setAttribute("aSky", new THREE.BufferAttribute(fSky, 1));
+  state.geom = g;
+  state.n = n;
+  state.points = new THREE.Points(g, material);
+  // Positions live only in the vertex shader, so three.js cannot compute a meaningful bounding
+  // volume and would cull the whole cloud. Disabling culling outright is correct here (an
+  // Infinity-radius bounding sphere risks NaN in the frustum test instead).
+  state.points.frustumCulled = false;
+  scene.add(state.points);
+
+  $("status").textContent =
+    `${s.scene} · ${n.toLocaleString()} pts · ${state.meta.width}×${state.meta.height}` +
+    ` · ${state.meta.n_frames} frames · ${info.convention === "pm1" ? "[-1,1]" : "[0,1]"} depth` +
+    (state.meta.has_rast ? " · rast ✓" : " · rast ✗") +
+    (info.sky_fraction ? ` · sky ${(100 * info.sky_fraction).toFixed(1)}%` : "");
+  updateOrientation();     // applies auto-upright to the new object, then frames it
+}
+
+// Frame the cloud from a subsample, using the current (a,b) so it tracks the sliders.
+function recenter() {
+  if (!state.geom) return;
+  const d = state.geom.getAttribute("position").array;
+  const o = state.geom.getAttribute("aOrigin").array;
+  const z = state.geom.getAttribute("aZ").array;
+  const edge = state.geom.getAttribute("aEdge").array;
+  const frame = state.geom.getAttribute("aFrame").array;
+  const rmask = state.geom.getAttribute("aRMask").array;
+  const skyA = state.geom.getAttribute("aSky").array;
+  const a = uniforms.uA.value, b = uniforms.uB.value, F = uniforms.uFlip.value;
+  const step = Math.max(1, Math.floor(state.n / 20000));
+  let c = new THREE.Vector3(), m = 0;
+  const pts = [];
+  for (let i = 0; i < state.n; i += step) {
+    const dep = Math.exp(a * z[i] + b);
+    // Apply the SAME predicate as the shader. Framing used to ignore the filters, so a handful of
+    // runaway points from an ill-conditioned fit would blow the radius up and shrink the real scene
+    // to a dot even after the user had filtered them out of the render.
+    if (!isFinite(dep)) continue;
+    if (dep < uniforms.uDMin.value || dep > uniforms.uDMax.value) continue;
+    if (edge[i] > uniforms.uEdge.value) continue;
+    if (!state.frames.has(frame[i])) continue;
+    if (uniforms.uReqGauss.value > 0.5 && rmask[i] < 0.5) continue;
+    if (uniforms.uHideSky.value > 0.5 && skyA[i] > 0.5) continue;
+    if (z[i] < uniforms.uZMin.value || z[i] > uniforms.uZMax.value) continue;
+    // Must apply the same flip the shader does, or the camera would be framed on the unflipped
+    // cloud and the scene would sit off-screen.
+    const p = new THREE.Vector3((o[i*3] + d[i*3]*dep) * F.x,
+                                (o[i*3+1] + d[i*3+1]*dep) * F.y,
+                                (o[i*3+2] + d[i*3+2]*dep) * F.z)
+      .applyQuaternion(state.orient);   // same transform the object carries, or framing is wrong
+    pts.push(p); c.add(p); m++;
+  }
+  if (!m) return;
+  c.divideScalar(m);
+  // Median distance, not max: a handful of runaway points would otherwise zoom the camera out
+  // until the scene is a dot.
+  const ds = pts.map((p) => p.distanceTo(c)).sort((x, y) => x - y);
+  const r = Math.max(ds[Math.floor(ds.length * 0.9)] || 1, 0.05);
+  uniforms.uSceneScale.value = r;
+  controls.target.copy(c);
+  camera.position.copy(c).add(new THREE.Vector3(r * 1.6, r * 0.9, r * 1.6));
+  camera.near = r / 500; camera.far = r * 200;
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+$("recenter").onclick = recenter;
+
+// ---------------------------------------------------------------------------------------------
+// Filmstrip
+// ---------------------------------------------------------------------------------------------
+function buildFilmstrip() {
+  const f = $("film"), s = state.sel, m = state.meta;
+  f.innerHTML = "";
+  const ctx = new Set(m.context_index);
+  m.target_index.forEach((idx, i) => {
+    const el = document.createElement("div");
+    el.className = "thumb" + (ctx.has(idx) ? " ctx" : "");
+    el.innerHTML =
+      `<img loading="lazy" src="/api/image?dataset=${s.dataset}&scene=${s.scene}&kind=color&frame=${idx}" />` +
+      `<img loading="lazy" src="/api/image?dataset=${s.dataset}&scene=${s.scene}&kind=depth&frame=${idx}" />` +
+      `<span>${idx}${ctx.has(idx) ? " ctx" : ""}</span>`;
+    // Toggle this frame in/out of the unprojection set. Shift-click isolates it (the fastest way to
+    // find which view is emitting an artifact).
+    el.onclick = (ev) => {
+      if (ev.shiftKey) { state.frames = new Set([i]); }
+      else if (state.frames.has(i)) { state.frames.delete(i); }
+      else { state.frames.add(i); }
+      applySelection();
+    };
+    f.appendChild(el);
+  });
+  applySelection();
+}
+
+// Single place that pushes the selection into the shader, the filmstrip and the frustums, so the
+// three can never disagree about which frames are active.
+function applySelection(reframe = true) {
+  const n = state.meta ? state.meta.n_frames : 0;
+  const m = uniforms.uSel.value;
+  for (let i = 0; i < 64; i++) m[i] = state.frames.has(i) ? 1 : 0;
+  uniforms.uNumFrames.value = Math.max(n, 1);
+  $("frameVal").textContent = state.frames.size === n ? "all"
+    : state.frames.size === 0 ? "none" : `${state.frames.size} / ${n}`;
+  document.querySelectorAll("#film .thumb").forEach((el, i) => {
+    el.classList.toggle("off", !state.frames.has(i));
+  });
+  buildFrustums();
+  if (reframe) recenter();
+}
+
+function selectFrames(pred) {
+  const n = state.meta ? state.meta.n_frames : 0;
+  state.frames = new Set();
+  for (let i = 0; i < n; i++) if (pred(i)) state.frames.add(i);
+  applySelection();
+}
+
+$("selAll").onclick  = () => selectFrames(() => true);
+$("selNone").onclick = () => selectFrames(() => false);
+$("selInv").onclick  = () => { const old = state.frames; state.frames = new Set();
+  for (let i = 0; i < state.meta.n_frames; i++) if (!old.has(i)) state.frames.add(i);
+  applySelection(); };
+$("selCtx").onclick  = () => {
+  const ctx = new Set(state.meta.context_index);
+  selectFrames((i) => ctx.has(state.meta.target_index[i]));
+};
+
+// ---------------------------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------------------------
+const bind = (id, uni, fmt = (v) => v.toFixed(2), label = null) => {
+  $(id).oninput = (e) => {
+    const v = parseFloat(e.target.value);
+    uniforms[uni].value = v;
+    if (label) $(label).textContent = fmt(v);
+  };
+};
+bind("aSlider", "uA", (v) => v.toFixed(3), "aVal");
+bind("bSlider", "uB", (v) => v.toFixed(3), "bVal");
+bind("psSlider", "uPointSize", (v) => v.toFixed(1), "psVal");
+
+// Camera frustums as line segments: apex at the camera center, four corner rays, and the quad
+// closing them. Corner directions use the SAME pinhole convention as the points --
+// d_cam = ((u-cx)/fx, (v-cy)/fy, 1) then rotated by the c2w rotation -- so a frustum's edges lie
+// along the rays the point cloud was unprojected along, and any convention mismatch would be
+// immediately visible as a misalignment. The manual axis flip is applied here on the CPU (the points
+// get it as a shader uniform); the auto-upright quaternion is applied to the object, as for points.
+const CTX_COLOR = [0.13, 0.83, 0.93];      // cyan
+const TGT_COLOR = [0.97, 0.44, 0.44];      // red
+
+function buildFrustums() {
+  if (state.cams) {
+    scene.remove(state.cams);
+    state.cams.geometry.dispose();
+    if (state.camMat) { state.camMat.dispose(); state.camMat = null; }
+    state.cams = null;
+  }
+  if (!state.meta || !$("showCams").checked) return;
+  const m = state.meta;
+  if (!m.extrinsics || !m.intrinsics) return;
+
+  // Size the frustum against whatever the scene actually spans, so it is neither invisible nor
+  // swallowing the cloud: the camera baseline for wide trajectories, the median depth otherwise.
+  const s0 = depthStats(uniforms.uA.value, uniforms.uB.value);
+  const ref = Math.max(cameraSpan(), (s0 ? s0.p50 : 1) * 0.5);
+  const L = ref * parseFloat($("frusSlider").value);
+  const F = uniforms.uFlip.value, W = m.width, H = m.height;
+  const ctx = new Set(m.context_index);
+
+  const pos = [], col = [];
+  const push = (p, q, c) => {
+    pos.push(p[0] * F.x, p[1] * F.y, p[2] * F.z, q[0] * F.x, q[1] * F.y, q[2] * F.z);
+    col.push(...c, ...c);
+  };
+
+  m.extrinsics.forEach((E, fi) => {
+    if (!state.frames.has(fi)) return;      // hide frustums for frames we are not unprojecting
+    const K = m.intrinsics[fi];
+    const fx = K[0][0] * W, fy = K[1][1] * H, cx = K[0][2] * W, cy = K[1][2] * H;
+    const R = [E[0], E[1], E[2]];                       // rows of the 4x4
+    const o = [E[0][3], E[1][3], E[2][3]];
+    const corner = (u, v) => {
+      const d = [(u - cx) / fx, (v - cy) / fy, 1];
+      const w = [0, 1, 2].map((r) => R[r][0] * d[0] + R[r][1] * d[1] + R[r][2] * d[2]);
+      const n = Math.hypot(...w) || 1;
+      return [0, 1, 2].map((k) => o[k] + (w[k] / n) * L);
+    };
+    const c = ctx.has(m.target_index[fi]) ? CTX_COLOR : TGT_COLOR;
+    const q = [corner(0, 0), corner(W, 0), corner(W, H), corner(0, H)];
+    q.forEach((k) => push(o, k, c));                    // apex to each corner
+    for (let i = 0; i < 4; i++) push(q[i], q[(i + 1) % 4], c);   // closing quad
+  });
+
+  const g = new LineSegmentsGeometry();
+  g.setPositions(pos);
+  g.setColors(col);
+  const mat = new LineMaterial({
+    vertexColors: true,
+    linewidth: parseFloat($("frusWSlider").value),   // in PIXELS, since worldUnits is false
+    worldUnits: false,
+    dashed: false,
+  });
+  mat.resolution.set(renderer.domElement.width, renderer.domElement.height);
+  state.camMat = mat;
+  state.cams = new LineSegments2(g, mat);
+  state.cams.quaternion.copy(state.orient);             // match the auto-upright rotation
+  state.cams.frustumCulled = false;
+  scene.add(state.cams);
+}
+
+$("showCams").onchange = buildFrustums;
+$("frusSlider").oninput = () => {
+  $("frusVal").textContent = parseFloat($("frusSlider").value).toFixed(3);
+  buildFrustums();
+};
+// Width is a material property, so it changes live without rebuilding the geometry.
+$("frusWSlider").oninput = () => {
+  const v = parseFloat($("frusWSlider").value);
+  $("frusWVal").textContent = v + " px";
+  if (state.camMat) state.camMat.linewidth = v;
+};
+
+// Rotate the whole cloud so the cameras' average DOWN direction points along -Y, which is what
+// three.js treats as down. The world frames of these datasets are aligned to the first camera, and
+// under the OpenCV convention that camera's +y points downward in the image -- so without this the
+// floor of an indoor scene ends up at the TOP of the screen. Deriving the direction from the
+// cameras handles every scene individually instead of assuming one global convention.
+function updateOrientation() {
+  const q = new THREE.Quaternion();
+  if ($("autoUp").checked && state.meta && state.meta.down) {
+    const d = new THREE.Vector3().fromArray(state.meta.down).normalize();
+    if (d.lengthSq() > 0.5) q.setFromUnitVectors(d, new THREE.Vector3(0, -1, 0));
+  }
+  state.orient = q;
+  if (state.points) state.points.quaternion.copy(q);
+  buildFrustums();
+  recenter();
+}
+$("autoUp").onchange = updateOrientation;
+
+function updateFlip() {
+  const fx = $("flipX").checked, fy = $("flipY").checked, fz = $("flipZ").checked;
+  uniforms.uFlip.value.set(fx ? -1 : 1, fy ? -1 : 1, fz ? -1 : 1);
+  // An ODD number of flips mirrors the scene: it reverses handedness, so the cloud becomes its
+  // own reflection. An EVEN number is a true rotation and leaves the geometry intact. Flipping Y
+  // and Z together is a 180 degrees rotation about X, which is exactly the OpenCV (y-down,
+  // z-forward) to three.js (y-up, z-back) conversion -- so that pair is the principled choice.
+  buildFrustums();
+  const odd = (fx + fy + fz) % 2 === 1;
+  $("flipInfo").innerHTML = odd
+    ? "<span style='color:var(--warn)'>odd flip = MIRRORED scene (handedness reversed)</span>"
+    : "even flip = true rotation, geometry preserved";
+  recenter();
+}
+["flipX", "flipY", "flipZ"].forEach((id) => { $(id).onchange = updateFlip; });
+$("colorMode").onchange = (e) => { uniforms.uColorMode.value = parseInt(e.target.value); };
+$("constSize").onchange = (e) => { uniforms.uSizeMode.value = e.target.checked ? 1 : 0; };
+$("strideSel").onchange = () => state.sel && loadCloud();
+
+$("ssSlider").oninput = () => { $("ssVal").textContent = $("ssSlider").value + "x"; };
+
+// Render one frame with a fully transparent clear, at a higher resolution than the on-screen canvas,
+// and hand the PNG to the server (which also wraps it in a PDF). The scene background is normally an
+// opaque color, so it has to be removed for the capture and restored afterwards or the saved image
+// carries the viewer's dark gray.
+$("snap").onclick = async () => {
+  if (!state.sel) return;
+  const ss = parseInt($("ssSlider").value);
+  const el = $("stage"), w = el.clientWidth, h = el.clientHeight;
+  const bg = scene.background;
+  $("snapInfo").textContent = "rendering…";
+  scene.background = null;
+  renderer.setClearAlpha(0);
+  renderer.setPixelRatio(ss);
+  renderer.setSize(w, h, false);
+  if (state.camMat) state.camMat.resolution.set(renderer.domElement.width, renderer.domElement.height);
+  renderer.render(scene, camera);
+  const png = renderer.domElement.toDataURL("image/png");
+  // Restore the interactive view before the upload, so the UI never sits in capture state.
+  scene.background = bg;
+  renderer.setClearAlpha(1);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  resize();
+  try {
+    const r = await (await fetch("/api/snapshot", { method: "POST", body: JSON.stringify({
+      dataset: state.sel.dataset, scene: state.sel.scene, png,
+      state: { fit: state.fitKey, a: uniforms.uA.value, b: uniforms.uB.value,
+               selected_frames: [...state.frames].sort((a, b) => a - b),
+               filters: { z01_range: [uniforms.uZMin.value, uniforms.uZMax.value],
+                          hide_sky: !!uniforms.uHideSky.value, edge: uniforms.uEdge.value,
+                          min_depth: uniforms.uDMin.value, max_depth: uniforms.uDMax.value,
+                          require_gaussian: !!uniforms.uReqGauss.value },
+               point_size: uniforms.uPointSize.value, constant_size: $("constSize").checked,
+               frustums: $("showCams").checked, stride: parseInt($("strideSel").value) },
+    }) })).json();
+    $("snapInfo").innerHTML = r.ok
+      ? `saved ${r.size}, ${r.kb} KB` +
+        (r.context && r.context.length ? ` + ${r.context.length} context view(s)` : "") +
+        `<br><span style="font-family:ui-monospace">${r.pdf}</span>`
+      : `<span style="color:var(--warn)">${r.error || "failed"}</span>`;
+  } catch (err) {
+    $("snapInfo").innerHTML = `<span style="color:var(--warn)">${err}</span>`;
+  }
+};
+
+["recFps", "recScale", "recHold"].forEach((id) => {
+  $(id).oninput = () => {
+    const v = $(id).value;
+    $(id + "Val").textContent = id === "recScale" ? (+v).toFixed(2) : v;
+  };
+});
+
+// Replay the unprojection from the CURRENT viewpoint and hand every rendered frame to the server,
+// which assembles the GIF/MP4. The camera must not move at all across the capture, so: damping and
+// the orbit controls are disabled for the duration, applySelection is called with reframe=false, and
+// no await sits between render() and toDataURL() -- with preserveDrawingBuffer the buffer survives,
+// but yielding to the rAF loop mid-pair could still overwrite it.
+$("recBtn").onclick = async () => {
+  if (!state.sel || !state.geom) return;
+  const order = [...state.frames].sort((a, b) => a - b);
+  if (!order.length) { $("recInfo").textContent = "no frames selected"; return; }
+
+  const prevFrames = new Set(state.frames);
+  const prevDamping = controls.enableDamping;
+  const prevBg = scene.background;
+  const scale = parseFloat($("recScale").value);
+  controls.enableDamping = false; controls.enabled = false;
+  // Capture on a transparent clear: the server composites onto white, which keeps the antialiased
+  // point edges clean instead of fringing them against the viewer's dark gray.
+  scene.background = null;
+  renderer.setClearAlpha(0);
+  renderer.setPixelRatio(scale);
+  resize();                                  // also refreshes LineMaterial resolution
+
+  const shots = [];
+  try {
+    for (let k = 1; k <= order.length; k++) {
+      state.frames = new Set(order.slice(0, k));
+      applySelection(false);                 // reveal one more view, camera untouched
+      renderer.render(scene, camera);
+      shots.push(renderer.domElement.toDataURL("image/png"));
+      if (k % 4 === 0) {                     // let the UI breathe and show progress
+        $("recInfo").textContent = `capturing ${k}/${order.length}…`;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+    $("recInfo").textContent = `encoding ${shots.length} frames…`;
+    const r = await (await fetch("/api/record", { method: "POST", body: JSON.stringify({
+      dataset: state.sel.dataset, scene: state.sel.scene,
+      fps: parseInt($("recFps").value), hold: parseInt($("recHold").value),
+      format: $("recFmt").value, frames: shots, order,
+      compose: $("recCompose").checked,
+      state: { fit: state.fitKey, a: uniforms.uA.value, b: uniforms.uB.value,
+               frames: order, point_size: uniforms.uPointSize.value,
+               constant_size: $("constSize").checked, frustums: $("showCams").checked,
+               camera: { position: camera.position.toArray(), target: controls.target.toArray() } },
+    }) })).json();
+    $("recInfo").innerHTML = r.ok
+      ? `${r.n_frames} frames &middot; ${r.seconds}s &middot; ${r.size} &middot; ${r.kb} KB<br>` +
+        `<span style="font-family:ui-monospace">${r.path}</span>` +
+        (r.note ? `<br><span style="color:var(--warn)">${r.note}</span>` : "")
+      : `<span style="color:var(--warn)">${r.error || "failed"}</span>`;
+  } catch (err) {
+    $("recInfo").innerHTML = `<span style="color:var(--warn)">${err}</span>`;
+  } finally {
+    scene.background = prevBg;
+    renderer.setClearAlpha(1);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    resize();
+    state.frames = prevFrames;
+    applySelection(false);                   // restore selection, still without moving the camera
+    controls.enableDamping = prevDamping; controls.enabled = true;
+  }
+};
+
+addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  const shown = visibleScenes();
+  const i = shown.findIndex((s) => state.sel && s.scene === state.sel.scene);
+  if (e.key === "[" && i > 0) selectScene(shown[i - 1]);
+  if (e.key === "]" && i < shown.length - 1) selectScene(shown[i + 1]);
+});
+
+resize();
+updateFlip();                      // sync uFlip + the mirror warning with the checkbox defaults
+loadIndex();
+window.__viewerBooted = true;      // silences the boot guard above
+</script>
+</body>
+</html>

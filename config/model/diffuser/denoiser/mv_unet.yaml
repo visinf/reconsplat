@@ -1,0 +1,24 @@
+defaults:
+  - autoencoder: unet
+  - multi_view_attention: standard_attention
+
+name: mv_unet
+
+autoencoder:
+  down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"]
+  up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"]
+  block_out_channels: [320, 640, 1280, 1280]
+
+
+encoder_conditioning: true  
+mid_conditioning: true  
+decoder_conditioning: true  
+temporal_conditioning: false
+
+low_res_cross_view_att: true
+min_scale_factor_cross_view_attn: 8
+
+use_prope_encoding: true
+video_finetuning: false
+disable_rast_cond: false
+pretrained_from: null

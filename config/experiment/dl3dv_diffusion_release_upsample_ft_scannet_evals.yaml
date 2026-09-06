@@ -1,0 +1,88 @@
+# @package _global_
+
+defaults:
+  - override /dataset: scannet
+  - override /model/encoder: costvolume
+  - override /loss: [diffusion]
+  - override /model/diffuser/denoiser/multi_view_attention: spatial_transformer_3d
+  - override /model/diffuser/train_scheduler: ddpm
+
+wandb:
+  name: dl3dv_diffusion_release_upsample_ft_scannet_evals
+  mode: disabled
+
+model:
+  encoder:
+    num_depth_candidates: 128
+    costvolume_unet_feat_dim: 128
+    costvolume_unet_channel_mult: [1,1,1]
+    costvolume_unet_attn_res: [4]
+    gaussians_per_pixel: 1
+    depth_unet_feat_dim: 32
+    depth_unet_attn_res: [16]
+    depth_unet_channel_mult: [1,1,1,1,1]
+    legacy_2views: false
+    grid_sample_disable_cudnn: true
+    shim_patch_size: 16
+    fit_ckpt: true
+    gaussian_adapter:
+      feature_sh_degree: 2
+      n_feature_channels: 4
+    costvolume_nearest_n_views: 3
+    multiview_trans_nearest_n_views: 3
+
+  discriminator: null
+
+  diffuser:
+    variational_rast_cond: false
+    replace_conv_in_out: false
+    upsample_latents: true          
+    downsample_preds: true          
+    apply_multi_res_noise: false
+    annealed_mr_noise: false
+    mr_noise_strength: 0.9
+    mr_noise_downscale_strategy: original
+    decode_video: true
+    gaussian_mean: 0.0
+    gaussian_variance: 1.0
+    enable_clip_conditioner_cross_attn: false
+
+    denoiser:
+      pretrained_from: sd2-community/stable-diffusion-2-1
+      pretrained_revision: bb2154823665391b4fb29b0b9cf82a198964ee05   
+      low_res_cross_view_attn: true
+      min_scale_factor_cross_view_attn: 4
+      gradient_checkpointing: true
+      temporal_conditioning: false   # dl3dv-upsample-ft has no temporal blocks
+      video_finetuning: false
+
+    train_scheduler:
+      shift_schedule: false
+      prediction_type: "v_prediction"
+      num_inference_steps: 25
+
+train:
+  stage: diffusion
+
+checkpointing:
+  load_first_stage: checkpoints/stage1-vae/dl3dv.ckpt
+  load_second_stage: checkpoints/stage2-diffusion/dl3dv-upsample-ft.ckpt
+  resume: false
+
+dataset:
+  image_shape: [256, 448]
+  near: 0.01
+  far: 2.01
+  baseline_scale_bounds: false
+  make_baseline_1: false
+  sort_target_index: false
+  sort_context_index: false
+  test_chunk_interval: -1
+
+test:
+  eval_time_skip_steps: 5
+  compute_scores: false           
+  generate_val_video_wobble: false
+  sample_in_chunks: true
+  chunk_size: 4
+  chunk_overlap: 0

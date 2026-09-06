@@ -1,0 +1,15 @@
+# @package _global_
+
+defaults:
+  - dl3dv_diffusion_release_ft
+
+wandb:
+  name: dl3dv_diffusion_release_ft_evals
+  mode: disabled
+
+checkpointing:
+  # The training config points load_second_stage at the checkpoint that run STARTED from. Here it is
+  # the checkpoint being evaluated.
+  load_first_stage: checkpoints/stage1-vae/dl3dv.ckpt
+  load_second_stage: checkpoints/stage2-diffusion/dl3dv-base.ckpt
+  resume: false

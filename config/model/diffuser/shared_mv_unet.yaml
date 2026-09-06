@@ -1,0 +1,21 @@
+load_ema_weights: null   # null = auto (True for mode=test, False for training)
+use_cfg: true
+cfg_scale: 3.0
+cfg_train: true
+
+replace_conv_in_out: true
+upsample_latents: true
+downsample_preds: true
+
+apply_multi_res_noise: false
+annealed_mr_noise: false
+mr_noise_strength: 0.9
+mr_noise_downscale_strategy: original
+sample_with_mr_noise: false
+decode_video: false
+gaussian_mean: 0.0
+gaussian_variance: 1.0
+
+enable_clip_conditioner_cross_attn: false
+sampling_scheduler: dpm++
+use_prope_encoding: true

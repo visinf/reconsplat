@@ -1,0 +1,117 @@
+defaults:
+  - dataset: re10k
+  # - optional dataset/view_sampler_dataset_specific_config: ${dataset/view_sampler}_${dataset}
+  - model/encoder: costvolume
+  - model/decoder: splatting_cuda
+  - model/autoencoder: kl_f8
+  - model/color_decoder: ldm_no_skip
+  - model/depth_decoder: ldm_no_skip
+  - model/diffuser: shared_mv_unet
+  - model/diffuser/denoiser: mv_unet
+  - model/diffuser/train_scheduler: ddpm
+  - loss: [mse]
+  - optional model/discriminator: null
+
+wandb:
+  project: reconsplat
+  entity: your-wandb-entity
+  name: train_mvsplat
+  mode: online
+  id: null
+
+mode: train
+
+dataset:
+  overfit_to_scene: null
+  # image_shape: [256, 256]
+
+data_loader:
+  # Avoid having to spin up new processes to print out visualizations.
+  train:
+    num_workers: 8
+    persistent_workers: true
+    batch_size: 4
+    seed: 1234
+    prefetch_factor: null
+  test:
+    num_workers: 4
+    persistent_workers: false
+    batch_size: 1
+    seed: 2345
+    prefetch_factor: null
+  val:
+    num_workers: 1
+    persistent_workers: true
+    batch_size: 1
+    seed: 3456
+    prefetch_factor: null
+
+optimizer:
+  generator:
+    lr: 2e-4
+    scale_lr: false
+    gradient_clip_val: 0.5
+    lr_scheduler:
+      cosine_lr: true
+      warm_up_steps: 2000
+      final_div_factor: 10.
+    
+  discriminator:
+    lr: 2e-4
+    scale_lr: false
+    gradient_clip_val: 0.5
+    lr_scheduler: 
+      cosine_lr: true
+      warm_up_steps: 2000
+      final_div_factor: 10.
+
+checkpointing:
+  load_first_stage: null          # checkpoint for encoder/decoder/first_stage (produced by the vae stage)
+  load_second_stage: null         # checkpoint for the diffuser/denoiser (produced by the diffusion stage); unused for the vae stage
+  every_n_train_steps: 5000       # 5000
+  save_top_k: -1
+  pretrained_model: null          # pretrained_model is to init modules with pretrained weights
+  resume: true                    # resume only if loading optimizer state_dict together with model
+  milestone_every_n_steps: null   # e.g. 50000 to also keep a checkpoint every N steps forever
+  milestone_steps: null           # e.g. [140000] to also pin specific steps as milestones
+
+train:
+  depth_mode: null
+  extended_visualization: false
+  print_log_every_n_steps: 50
+  stage: vae
+
+test:
+  output_path: outputs/test
+  compute_scores: false
+  eval_time_skip_steps: 0
+  save_image: true
+  save_video: false
+  generate_val_video_wobble: true
+  val_video_num_frames: 30        # denoised jointly, so memory scales with this (was hardcoded to 5)
+  generate_pcd_projections: false
+  align_pcd_with_rasterized_depth: true
+  pcd_alignment_source: oracle
+  fit_pcd_scale: false
+  fix_noise_for_targets: false
+  sample_in_chunks: false
+  chunk_size: 14
+  chunk_overlap: 4
+  chunk_decode_mode: blend_then_decode
+  chunk_decode_fps: 20
+  save_intermediate_recons: false
+
+seed: 111123
+
+trainer:
+  max_steps: -1
+  val_check_interval: 100
+  num_sanity_val_steps: 2
+  num_nodes: 1
+  devices: null
+  gradient_clip_val: 0.5
+  precision: 32-true              # keep as-is; bf16-mixed diverges on the diffusion stage (see TrainerCfg)
+  profiler: null  # "simple" or "advanced" to dump step-timing breakdowns to <output_dir>/profiler_report.txt
+  accumulate_grad_batches: 1  # only supported for the "diffusion" stage (automatic optimization)
+
+output_dir: null
